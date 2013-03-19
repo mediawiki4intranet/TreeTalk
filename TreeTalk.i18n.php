@@ -72,4 +72,16 @@ $6
 * [[:$4|Прочитать статью]] $2.
 ',
     'treetalk-email-unsubscribe' => '<p><a href="$2">Отписаться</a> от комментариев к $1.</p>',
+
+    'treetalk-form-title' => 'Написать новый комментарий',
+    'treetalk-form-textfield' => 'Комментарий:',
+    'treetalk-form-submit' => 'Отправить',
+    'treetalk-form-preview' => 'Предпросмотр',
+    'treetalk-form-subscribe' => 'Подписаться на комментарии к этой записи',
+
+    'treetalk-reply' => 'Ответить',
+    'treetalk-edit' => 'Править',
+    'treetalk-permalink' => 'Ссылка',
+
+    'treetalk-special-reply' => 'Ответ на комментарий',
 );

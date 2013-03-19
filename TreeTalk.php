@@ -19,7 +19,7 @@ $wgExtensionMessagesFiles['TreeTalk'] = dirname(__FILE__).'/TreeTalk.i18n.php';
  */
 class TreeTalkHooks
 {
-    static $comments;
+    static $comments, $disable;
 
     /**
      * Set parser hook
@@ -56,7 +56,7 @@ class TreeTalkHooks
      */
     static function ArticleEditUpdates(&$article, &$editInfo, $changed)
     {
-        if (self::$comments)
+        if (self::$comments && !self::$disable)
         {
             TreeTalkSync::syncComments($article, self::$comments);
             self::$comments = false;
@@ -75,7 +75,7 @@ class TreeTalk
      */
     static function renderComments(&$parser, &$text)
     {
-        global $wgUser;
+        global $wgUser, $wgOut;
         $pageview = false;
         if ($wgUser->getId())
         {
@@ -100,11 +100,70 @@ class TreeTalk
         $tree = $parser->_tree;
         unset($parser->_comments);
         unset($parser->_tree);
-        $text .= $parser->parse(
-            self::thread($comments, $pageview, $wgUser->getName()),
-            $parser->mTitle, $parser->mOptions, true, false
-        )->getText();
+        $pageId = $parser->mTitle->userCan('edit') ? $parser->mTitle->getArticleId() : false;
+        $thread = self::thread($comments, $pageview, $wgUser->getId() ? $wgUser->getName() : false, $pageId);
+        $text .= $parser->parse($thread, $parser->mTitle, $parser->mOptions, true, false)->getText();
+        if ($pageId)
+        {
+            $spec = Title::newFromText('Special:TreeTalk');
+            $editText = wfMsg('treetalk-edit');
+            $replyText = wfMsg('treetalk-reply');
+            $permalinkText = wfMsg('treetalk-permalink');
+            $tools = '<ul class="wl-comment-tools">'.
+                '<li class="wl-comment-action-reply"><a href="'.$spec->getFullUrl(array(
+                    'action' => 'edit',
+                    'page' => $pageId,
+                    'replyto' => 'C_A/C_T',
+                )).'">'.$replyText.'</a></li>'.
+                '<li class="wl-comment-action-link"><a href="#cmt-C_A-C_T">'.$permalinkText.'</a></li>'.
+                '<li class="wl-comment-action-edit"><a href="'.$spec->getFullUrl(array(
+                    'action' => 'edit',
+                    'page' => $pageId,
+                    'edit' => 'C_A/C_T',
+                )).'">'.$editText.'</a></li>'.
+                '</ul>';
+            $text = preg_replace_callback('#<ul class="wl-comment-tools">([^<]+)/([^</]+)</ul>#s', function($m) use($tools) {
+                return strtr($tools, array('C_A' => $m[1], 'C_T' => $m[2]));
+            }, $text);
+            $text .= self::replyForm($pageId);
+/* TODO: Enable WikiEditor for comments (at least editing, also maybe for new ones). Something like this:
+            $wgOut->addModules(array('jquery.wikiEditor', 'jquery.wikiEditor.toolbar', 'jquery.wikiEditor.toolbar.config'));
+            $ins = <<<EOF
+<script language="JavaScript">
+$( document ).ready( function() {
+    $( '#tt-comment' ).wikiEditor();
+    $( '#tt-comment' ).wikiEditor(
+        'addModule', $.wikiEditor.modules.toolbar.config.getDefaultConfig()
+    );
+} );
+</script>
+EOF
+;
+        $rnd = "{$parser->mUniqPrefix}-item-{$parser->mMarkerIndex}-" . Parser::MARKER_SUFFIX;
+        $parser->mMarkerIndex++;
+        $parser->mStripState->addNoWiki( $rnd, $ins );
+        $text .= $rnd;
+*/
+        }
         TreeTalkHooks::$comments = $tree;
+    }
+
+    /**
+     * Render reply form
+     */
+    static function replyForm($pageId, $text = '', $params = array())
+    {
+        global $wgUser;
+        $spec = Title::newFromText('Special:TreeTalk');
+        return '<fieldset id="tt-comment-form"><legend>'.wfMsg('treetalk-form-title').'</legend>'.
+            '<form method="POST" action="'.$spec->getFullUrl($params + array('action' => 'edit', 'page' => $pageId)).'">'.
+            '<input type="hidden" name="token" value="'.$wgUser->getEditToken().'">'.
+            '<p><label for="tt-comment">'.wfMsg('treetalk-form-textfield').'</label></p>'.
+            '<textarea rows="5" cols="40" id="tt-comment" name="text">'.htmlspecialchars($text).'</textarea>'.
+            '<p><input type="submit" name="save" value="'.wfMsg('treetalk-form-submit').'">'.
+            '<input type="submit" name="preview" value="'.wfMsg('treetalk-form-preview').'">'.
+            ' &nbsp; <input type="checkbox" id="tt-subscribe" checked="checked" value="1" name="subscribe">'.
+            '&nbsp;<label for="tt-subscribe">'.wfMsg('treetalk-form-subscribe').'</label></p></form></fieldset>';
     }
 
     /**
@@ -175,8 +234,9 @@ class TreeTalk
     /**
      * Format comment thread
      */
-    static function thread($list, $pageview, $curuser)
+    static function thread($list, $pageview, $curuser, $pageId)
     {
+        global $wgLang;
         if ($pageview)
         {
             $pageview = wfTimestamp(TS_DB, $pageview);
@@ -193,7 +253,11 @@ class TreeTalk
                 ($pageview && $curuser !== $a && strcmp($pageview, $ts) < 0 ? ' wl-comment-highlight' : '').
                 '" id="'.Sanitizer::escapeId('cmt-'.$mwa.'-'.$mwts).'">';
             $thread .= '<div class="wl-comment-text">'.self::filterTags($c['text'], false).'</div>';
-            $thread .= '<div class="wl-comment-footer">— [[User:'.$a.']] • [[#cmt-'.$mwa.'-'.$mwts.'|'.$ts.']]</div>';
+            $thread .= '<div class="wl-comment-footer">— [[User:'.$a.']] • [[#cmt-'.$mwa.'-'.$mwts.'|'.$wgLang->timeanddate($mwts, true).']]</div>';
+            if ($pageId)
+            {
+                $thread .= "<ul class=\"wl-comment-tools\">$mwa/$mwts</ul>";
+            }
             $thread .= '</div>';
             if (!empty($c['replies']))
             {
@@ -236,27 +300,42 @@ class TreeTalk
      */
     static function commentTag($text, $args, $parser)
     {
-        $a = $args['author'];
-        $t = $args['timestamp'];
+        $a = @$args['author'];
+        $t = @$args['timestamp'];
         $pa = @$args['r_author'];
         $pt = @$args['r_timestamp'];
-        $comment = array(
-            'text' => $text,
-            'author' => $a,
-            'timestamp' => $t,
-        );
-        if ($pa && $pt)
+        if ($a && $t)
         {
-            $comment['replyto_author'] = $pa;
-            $comment['replyto_timestamp'] = $pt;
-            $parser->_tree["$pa/$pt"]['replies'][] = $comment;
-            $parser->_tree["$a/$t"] = &$parser->_tree["$pa/$pt"]['replies']
-                [count($parser->_tree["$pa/$pt"]['replies'])-1];
-        }
-        else
-        {
-            $parser->_comments[] = $comment;
-            $parser->_tree["$a/$t"] = &$parser->_comments[count($parser->_comments)-1];
+            $comment = array(
+                'text' => $text,
+                'author' => $a,
+                'timestamp' => $t,
+            );
+            if ($pa && $pt)
+            {
+                $comment['replyto_author'] = $pa;
+                $comment['replyto_timestamp'] = $pt;
+                if (!isset($parser->_tree["$pa/$pt"]))
+                {
+                    $parser->_tree["$pa/$pt"] = array(
+                        'text' => '',
+                        'author' => $pa,
+                        'timestamp' => $pt,
+                    );
+                    $parser->_comments[] = &$parser->_tree["$pa/$pt"];
+                }
+                $parser->_tree["$a/$t"] = &$comment;
+                $parser->_tree["$pa/$pt"]['replies'][] = &$comment;
+            }
+            elseif (isset($parser->_tree["$a/$t"]))
+            {
+                $parser->_tree["$a/$t"] += $comment;
+            }
+            else
+            {
+                $parser->_comments[] = &$comment;
+                $parser->_tree["$a/$t"] = &$comment;
+            }
         }
         // This removes extra whitespace
         return '<!-- -->';
@@ -292,7 +371,7 @@ class TreeTalkSync
     }
 
     /**
-     * Synchronize DB records with known comments and notify users about new comments
+     * Synchronize DB records with comments parsed from wikitext
      */
     static function syncComments($article, &$tree)
     {
@@ -303,12 +382,14 @@ class TreeTalkSync
         $add = $tree;
         foreach ($res as $row)
         {
-            if (isset($add[$row->tt_user_text.'/'.$row->tt_timestamp]))
+            if (isset($add[$row->tt_user_text.'/'.$row->tt_timestamp]) &&
+                $row->tt_text === $add[$row->tt_user_text.'/'.$row->tt_timestamp]['text'])
             {
                 unset($add[$row->tt_user_text.'/'.$row->tt_timestamp]);
             }
             else
             {
+                // Either delete or replace the comment
                 $del[] = $row->tt_id;
             }
         }
@@ -325,15 +406,10 @@ class TreeTalkSync
                     'tt_page' => $articleId,
                     'tt_user_text' => $c['author'],
                     'tt_timestamp' => wfTimestamp(TS_MW, $c['timestamp']),
+                    'tt_text' => $c['text'],
                 );
-                if (!empty($c['replyto_author']) &&
-                    !empty($c['replyto_timestamp']))
-                {
-                    $c['replyto'] = $tree[$c['replyto_author'].'/'.$c['replyto_timestamp']];
-                }
             }
             $dbw->insert('treetalk_comments', $new, __METHOD__);
-            self::sendCommentEmails($article, $add);
         }
     }
 
@@ -532,12 +608,10 @@ class TreeTalkSync
         $from = new MailAddress($wgPasswordSender, wfMsg('treetalk-email-from'));
         if ($to_with)
         {
-            //wfDebug("Subject=$subject, from $from to ".implode(', ', $to_with).", body:\n$body$unsubscribe");
             UserMailer::send($to_with, $from, $subject, $body . $unsubscribe);
         }
         if ($to_without)
         {
-            //wfDebug("Subject=$subject, from $from to ".implode(', ', $to_without).", body:\n$body");
             UserMailer::send($to_without, $from, $subject, $body);
         }
     }
@@ -599,12 +673,150 @@ class TreeTalkSync
 }
 
 /**
- * TreeTalk special page - used to manage subscriptions
+ * TreeTalk special page - used to post/edit comments and manage subscriptions
  */
 class TreeTalkSpecial extends SpecialPage
 {
+    static $actions = array('manage' => 1, 'subscribe' => 1, 'reply' => 1, 'post' => 1, 'edit' => 1);
+
+    function __construct()
+    {
+        parent::__construct('TreeTalk');
+    }
+
+    /**
+     * Actions:
+     * action=manage
+     * action=subscribe yes=? type=? page=?
+     * action=edit page=? replyto=?-? edit=?-? text=? save=? preview=?
+     */
     public function execute($par)
     {
-        
+        global $wgRequest;
+        $action = $wgRequest->getVal('action');
+        if (!self::$actions[$action])
+        {
+            $action = 'manage';
+        }
+        $action = 'action'.$action;
+        $this->$action();
+    }
+
+    public function actionManage()
+    {
+        // TODO
+    }
+
+    public function actionSubscribe()
+    {
+        // TODO
+    }
+
+    public function actionEdit()
+    {
+        global $wgRequest, $wgOut, $wgTitle, $wgUser;
+        $page = $wgRequest->getInt('page');
+        $reply = $wgRequest->getVal('replyto');
+        $editId = $wgRequest->getVal('edit');
+        $save = $wgRequest->getVal('save');
+        $preview = $wgRequest->getVal('preview');
+        $text = $wgRequest->getVal('text');
+        $token = $wgRequest->getVal('token');
+        $title = $page ? Title::newFromId($page) : false;
+        if ($title && !$title->userCan('edit'))
+        {
+            $title = false;
+        }
+        $reply = $reply ? explode('/', $reply, 2) : false;
+        $edit = $editId ? explode('/', $editId, 2) : false;
+        $text = preg_replace('#<(/?comment(?:\s+[^<>]*)?)>#is', '&lt;\1&gt;', $text);
+        $dbw = wfGetDB(DB_MASTER);
+        if ($edit)
+        {
+            $edit = $dbw->select('treetalk_comments', '*', array(
+                'tt_page' => $page,
+                'tt_user_text' => $edit[0],
+                'tt_timestamp' => $edit[1],
+            ), __METHOD__)->fetchRow();
+        }
+        if ($reply)
+        {
+            $reply = $dbw->select('treetalk_comments', '*', array(
+                'tt_page' => $page,
+                'tt_user_text' => $reply[0],
+                'tt_timestamp' => $reply[1],
+            ), __METHOD__)->fetchRow();
+        }
+        if ($title && ($save || $preview) && $wgUser->matchEditToken($token))
+        {
+            if ($save)
+            {
+                $title->getArticleId(Title::GAID_FOR_UPDATE);
+                $article = new WikiPage($title);
+                TreeTalkHooks::$disable = true;
+                $articleText = $article->getText();
+                if ($edit)
+                {
+                    $dbw->update(
+                        'treetalk_comments', array('tt_text' => $text),
+                        array('tt_id' => $edit['tt_id']), __METHOD__
+                    );
+                    $anchor = $edit['tt_user_text'].'-'.$edit['tt_timestamp'];
+                    // Update comment in wikitext
+                    if (preg_match('#(<comment[^<>]*\sauthor="'.strtr(preg_quote($edit['tt_user_text']), array(' ' => '[ _]', '_' => '[ _]')).
+                        '"[^<>]*\stimestamp="'.preg_quote(wfTimestamp(TS_DB, $edit['tt_timestamp'])).'"[^<>]*>).*?</comment\s*>#is', $articleText, $m, PREG_OFFSET_CAPTURE))
+                    {
+                        $articleText = substr($articleText, 0, $m[0][1]) . $m[1][0] . $text . '</comment>' . substr($articleText, $m[0][1]+strlen($m[0][0]));
+                        $article->doEdit($articleText, wfMsg('treetalk-rc-changed-comment', $edit['tt_user_text'], $edit['tt_timestamp']));
+                    }
+                }
+                else
+                {
+                    $new = array(
+                        'tt_page' => $page,
+                        'tt_user_text' => $wgUser->getName(),
+                        'tt_timestamp' => wfTimestampNow(TS_MW),
+                        'tt_text' => $text,
+                    );
+                    $dbw->insert('treetalk_comments', $new);
+                    $new['tt_timestamp'] = wfTimestamp(TS_DB, $new['tt_timestamp']);
+                    $anchor = $new['tt_user_text'].'-'.$new['tt_timestamp'];
+                    // Insert new comment into wikitext
+                    $articleText = rtrim($articleText)."\n<comment".
+                        ($reply ? ' r_author="'.$reply['tt_user_text'].'" r_timestamp="'.wfTimestamp(TS_DB, $reply['tt_timestamp']).'"' : '').
+                        ' author="'.$new['tt_user_text'].'" timestamp="'.$new['tt_timestamp'].
+                        "\">".$new['tt_text']."</comment>\n";
+                    $article->doEdit($articleText, wfMsg('treetalk-rc-new-comment', $reply['tt_user_text']));
+                    // Send notifications
+                    $new = array(
+                        'author' => $new['tt_user_text'],
+                        'timestamp' => $new['tt_timestamp'],
+                        'text' => $new['tt_text'],
+                        'replyto' => $reply ? array(
+                            'author' => $reply['tt_user_text'],
+                            'timestamp' => $reply['tt_timestamp'],
+                            'text' => $reply['tt_text'],
+                        ) : false,
+                    );
+                    TreeTalkSync::sendCommentEmails($article, array($new));
+                }
+                $anchor = str_replace(' ', '_', $anchor);
+                TreeTalkHooks::$disable = false;
+                $wgOut->redirect($title->getFullUrl().'#'.Sanitizer::escapeId('cmt-'.$anchor));
+                return;
+            }
+            elseif ($preview)
+            {
+                // TODO Add preview warning
+                $wgOut->addWikiText($text);
+            }
+        }
+        $wgOut->setPageTitle(wfMsg('treetalk-special-reply'));
+        if (!$title)
+        {
+            $wgOut->addHTML(wfMsg('treetalk-special-cannot-edit'));
+        }
+        // TODO Different form texts for add/edit
+        $wgOut->addHTML(TreeTalk::replyForm($page, $edit ? $edit['tt_text'] : '', $edit ? array('edit' => $editId) : array()));
     }
 }
