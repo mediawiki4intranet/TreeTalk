@@ -42,8 +42,8 @@ into MediaWiki via Special:Import.';
                 $last_post = $row->post_title;
             }
             $last_timestamp = $row->timestamp;
-            $text .= "<comment author=\"{$row->author}\" timestamp=\"{$row->timestamp}\"".
-                ($row->wlc_parent ? " r_author=\"{$row->r_author}\" r_timestamp=\"{$row->r_timestamp}\"" : '').
+            $text .= "<comment author=\"{$row->author}\" timestamp=\"".wfTimestamp(TS_DB, $row->timestamp)."\"".
+                ($row->wlc_parent ? " r_author=\"{$row->r_author}\" r_timestamp=\"".wfTimestamp(TS_DB, $row->r_timestamp)."\"" : '').
                 ">{$row->old_text}</comment>\n";
         }
         $export .= self::singlePage($last_post, $last_timestamp, $text);

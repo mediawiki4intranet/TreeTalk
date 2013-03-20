@@ -237,10 +237,6 @@ EOF
     static function thread($list, $pageview, $curuser, $pageId)
     {
         global $wgLang;
-        if ($pageview)
-        {
-            $pageview = wfTimestamp(TS_DB, $pageview);
-        }
         $thread = '<div class="wl-thread">';
         $minFold = 4;
         $stack = array();
@@ -250,7 +246,7 @@ EOF
             $mwa = str_replace(' ', '_', $a = $c['author']);
             $mwts = preg_replace('/\D+/', '', $ts = $c['timestamp']);
             $thread .= '<div class="wl-comment wl-comment-by-user'.
-                ($pageview && $curuser !== $a && strcmp($pageview, $ts) < 0 ? ' wl-comment-highlight' : '').
+                ($curuser && $curuser !== $a && (!$pageview || strcmp($pageview, $ts) < 0) ? ' wl-comment-highlight' : '').
                 '" id="'.Sanitizer::escapeId('cmt-'.$mwa.'-'.$mwts).'">';
             $thread .= '<div class="wl-comment-text">'.self::filterTags($c['text'], false).'</div>';
             $thread .= '<div class="wl-comment-footer">— [[User:'.$a.']] • [[#cmt-'.$mwa.'-'.$mwts.'|'.$wgLang->timeanddate($mwts, true).']]</div>';
